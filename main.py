@@ -55,14 +55,14 @@ class GiveawayView(discord.ui.View):
         entrants = gw.setdefault("entrants", [])
         if interaction.user.id in entrants:
             entrants.remove(interaction.user.id)
-            msg = "✅ You left the giveaway."
+            msg = "✅ You have **left** the giveaway."
         else:
             entrants.append(interaction.user.id)
-            msg = "✅ You entered the giveaway!"
+            msg = "✅ You have **successfully entered** the giveaway!"
         save_giveaways(data)
         await interaction.response.send_message(msg, ephemeral=True)
 
-# FIXED: Added force_end parameter so /gend works instantly
+# force_end added so /gend works instantly
 async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False):
     data = load_giveaways()
     gw = data.get(str(message_id))
@@ -84,7 +84,6 @@ async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False
         winners_count = gw.get("winners", 1)
         host = gw.get("host")
 
-        # Edit original message
         if len(entrants) == 0:
             ended_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered 😢", color=discord.Color.red())
         else:
@@ -95,7 +94,6 @@ async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False
             )
         await msg.edit(embed=ended_embed, view=None)
 
-        # Send winner embed
         if len(entrants) == 0:
             win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered the giveaway 😢", color=discord.Color.red())
         else:
@@ -106,12 +104,10 @@ async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False
             win_embed.add_field(name="Winner(s)", value=winner_mentions, inline=False)
             win_embed.add_field(name="Claim Your Prize", value=f"**Please DM the host <@{host}> to claim your prize!**", inline=False)
             win_embed.set_footer(text=f"Hosted by <@{host}> • {len(entrants)} total entries")
-
             await channel.send(f"🎉 **CONGRATULATIONS** {winner_mentions}!")
 
         await channel.send(embed=win_embed)
 
-        # Cleanup
         data.pop(str(message_id), None)
         save_giveaways(data)
 
@@ -169,7 +165,7 @@ async def gstart(interaction: discord.Interaction, duration: str, prize: str, wi
     )
     if role:
         embed.add_field(name="Required Role", value=role.mention)
-    embed.set_footer(text=f"Hosted by {interaction.user.display_name}")
+    embed.set_footer(text=f"Hosted by {interaction.user.display_name} • Message ID: {interaction.id} (copy for /greroll or /gend)")
 
     await interaction.response.send_message(embed=embed)
     msg = await interaction.original_response()
