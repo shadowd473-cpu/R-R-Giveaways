@@ -4,7 +4,10 @@ import asyncio
 import json
 import os
 import random
-from datetime import datetime, timedelta
+import logging
+from datetime import datetime, timedelta, timezone
+
+logging.basicConfig(level=logging.INFO)
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -20,14 +23,18 @@ def load_giveaways():
         try:
             with open(GIVEAWAYS_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception as e:
+            logging.error(f"Failed to load giveaways: {e}")
             return {}
     return {}
 
 def save_giveaways(data):
     os.makedirs(os.path.dirname(GIVEAWAYS_FILE), exist_ok=True)
-    with open(GIVEAWAYS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(GIVEAWAYS_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Failed to save giveaways: {e}")
 
 class GiveawayView(discord.ui.View):
     def __init__(self, message_id: int):
@@ -41,7 +48,6 @@ class GiveawayView(discord.ui.View):
         if not gw:
             await interaction.response.send_message("❌ Giveaway already ended.", ephemeral=True)
             return
-
         if gw.get("required_role") and gw["required_role"] not in [r.id for r in interaction.user.roles]:
             await interaction.response.send_message("❌ You need the required role!", ephemeral=True)
             return
@@ -57,11 +63,16 @@ class GiveawayView(discord.ui.View):
         await interaction.response.send_message(msg, ephemeral=True)
 
 async def end_giveaway(channel_id: int, message_id: int):
-    await asyncio.sleep(2)
     data = load_giveaways()
     gw = data.get(str(message_id))
     if not gw:
         return
+
+    # Calculate exact time left
+    remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
     channel = bot.get_channel(channel_id)
     if not channel:
         return
@@ -72,7 +83,7 @@ async def end_giveaway(channel_id: int, message_id: int):
         winners_count = gw.get("winners", 1)
         host = gw.get("host")
 
-        # === EDIT ORIGINAL GIVEAWAY TO "ENDED" ===
+        # Edit original message
         if len(entrants) == 0:
             ended_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered 😢", color=discord.Color.red())
         else:
@@ -83,47 +94,60 @@ async def end_giveaway(channel_id: int, message_id: int):
             )
         await msg.edit(embed=ended_embed, view=None)
 
-        # === SEND WINNER EMBED (exactly what you asked for) ===
+        # Send winner embed
         if len(entrants) == 0:
-            win_embed = discord.Embed(
-                title="🎉 GIVEAWAY ENDED",
-                description="No one entered the giveaway 😢",
-                color=discord.Color.red()
-            )
+            win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered the giveaway 😢", color=discord.Color.red())
         else:
             winners = random.sample(entrants, k=min(winners_count, len(entrants)))
             winner_mentions = " ".join(f"<@{w}>" for w in winners)
-            win_embed = discord.Embed(
-                title="🎉 **GIVEAWAY WINNER(S)!** 🎉",
-                color=discord.Color.gold()
-            )
+            win_embed = discord.Embed(title="🎉 **GIVEAWAY WINNER(S)!** 🎉", color=discord.Color.gold())
             win_embed.add_field(name="Prize", value=gw['prize'], inline=False)
             win_embed.add_field(name="Winner(s)", value=winner_mentions, inline=False)
-            win_embed.add_field(
-                name="Claim Your Prize",
-                value=f"**Please DM the host <@{host}> to claim your prize!**",
-                inline=False
-            )
+            win_embed.add_field(name="Claim Your Prize", value=f"**Please DM the host <@{host}> to claim your prize!**", inline=False)
             win_embed.set_footer(text=f"Hosted by <@{host}> • {len(entrants)} total entries")
 
-            # Also ping the winners in the channel
             await channel.send(f"🎉 **CONGRATULATIONS** {winner_mentions}!")
 
         await channel.send(embed=win_embed)
 
-        # Clean up database
+        # Cleanup
         data.pop(str(message_id), None)
         save_giveaways(data)
 
-    except:
-        pass  # message deleted or channel gone
+    except Exception as e:
+        logging.error(f"Error ending giveaway {message_id}: {e}")
 
 @bot.event
 async def on_ready():
     print(f"🚀 Advanced Giveaway Bot online as {bot.user}")
-    await tree.sync()
-    print("✅ All slash commands synced!")
 
+    data = load_giveaways()
+    for mid, gw in list(data.items()):
+        channel = bot.get_channel(gw["channel_id"])
+        if not channel:
+            data.pop(mid, None)
+            continue
+
+        try:
+            msg = await channel.fetch_message(int(mid))
+            # Re-attach button
+            await msg.edit(view=GiveawayView(int(mid)))
+
+            # Re-schedule (or end immediately if expired)
+            remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
+            if remaining > 0:
+                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid)))
+            else:
+                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid)))  # ends instantly
+
+        except:
+            data.pop(mid, None)  # clean dead giveaway
+
+    save_giveaways(data)
+    await tree.sync()
+    print("✅ All slash commands synced & active giveaways restored!")
+
+# ==================== COMMANDS (unchanged except tiny improvements) ====================
 @tree.command(name="gstart", description="Start a new giveaway")
 @app_commands.describe(
     duration="Time (e.g. 1h, 30m, 2d)",
@@ -132,13 +156,7 @@ async def on_ready():
     role="Role required to enter (optional)"
 )
 @app_commands.default_permissions(manage_guild=True)
-async def gstart(
-    interaction: discord.Interaction,
-    duration: str,
-    prize: str,
-    winners: int = 1,
-    role: discord.Role = None
-):
+async def gstart(interaction: discord.Interaction, duration: str, prize: str, winners: int = 1, role: discord.Role = None):
     unit = duration[-1].lower()
     if unit not in "smhd" or not duration[:-1].isdigit():
         await interaction.response.send_message("❌ Invalid duration! Examples: `30s`, `10m`, `2h`, `1d`", ephemeral=True)
@@ -146,7 +164,7 @@ async def gstart(
 
     multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     seconds = int(duration[:-1]) * multipliers[unit]
-    end_time = datetime.utcnow() + timedelta(seconds=seconds)
+    end_time = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
     embed = discord.Embed(
         title="🎉 **NEW GIVEAWAY** 🎉",
@@ -187,8 +205,9 @@ async def glist(interaction: discord.Interaction):
         return
 
     lines = []
+    now = datetime.now(timezone.utc).timestamp()
     for mid, gw in data.items():
-        remaining = int(gw["end_time"] - datetime.utcnow().timestamp())
+        remaining = gw["end_time"] - now
         if remaining < 0:
             continue
         time_left = f"<t:{int(gw['end_time'])}:R>"
