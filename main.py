@@ -58,21 +58,27 @@ class GiveawayView(discord.ui.View):
             msg = "✅ You have **left** the giveaway."
         else:
             entrants.append(interaction.user.id)
-            msg = "✅ You have **successfully entered** the giveaway!"
+            msg = f"✅ You have **successfully entered** the giveaway! (Total entries: {len(entrants)})"
+
         save_giveaways(data)
+        logging.info(f"User {interaction.user.id} joined/left giveaway {self.message_id}. Total entries now: {len(entrants)}")
         await interaction.response.send_message(msg, ephemeral=True)
 
-# force_end added so /gend works instantly
 async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False):
+    # Wait first
+    if not force_end:
+        data = load_giveaways()
+        gw = data.get(str(message_id))
+        if gw:
+            remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+
+    # Reload fresh data AFTER sleep (this fixes the "nobody entered" bug)
     data = load_giveaways()
     gw = data.get(str(message_id))
     if not gw:
         return
-
-    if not force_end:
-        remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
-        if remaining > 0:
-            await asyncio.sleep(remaining)
 
     channel = bot.get_channel(channel_id)
     if not channel:
@@ -84,6 +90,7 @@ async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False
         winners_count = gw.get("winners", 1)
         host = gw.get("host")
 
+        # Edit original message
         if len(entrants) == 0:
             ended_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered 😢", color=discord.Color.red())
         else:
@@ -94,6 +101,7 @@ async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False
             )
         await msg.edit(embed=ended_embed, view=None)
 
+        # Winner embed
         if len(entrants) == 0:
             win_embed = discord.Embed(title="🎉 GIVEAWAY ENDED", description="No one entered the giveaway 😢", color=discord.Color.red())
         else:
@@ -165,7 +173,7 @@ async def gstart(interaction: discord.Interaction, duration: str, prize: str, wi
     )
     if role:
         embed.add_field(name="Required Role", value=role.mention)
-    embed.set_footer(text=f"Hosted by {interaction.user.display_name} • Message ID: {interaction.id} (copy for /greroll or /gend)")
+    embed.set_footer(text=f"Hosted by {interaction.user.display_name} • Message ID: {interaction.id} (copy for reroll)")
 
     await interaction.response.send_message(embed=embed)
     msg = await interaction.original_response()
@@ -186,6 +194,8 @@ async def gstart(interaction: discord.Interaction, duration: str, prize: str, wi
     bot.loop.create_task(end_giveaway(interaction.channel.id, msg.id, force_end=False))
 
     await interaction.followup.send(f"✅ Giveaway started! Message ID: `{msg.id}`", ephemeral=True)
+
+# (glist, gend, greroll are unchanged – just copy them from your previous file if you want, they are the same)
 
 @tree.command(name="glist", description="List all active giveaways")
 @app_commands.default_permissions(manage_guild=True)
