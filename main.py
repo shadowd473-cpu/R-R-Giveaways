@@ -62,16 +62,17 @@ class GiveawayView(discord.ui.View):
         save_giveaways(data)
         await interaction.response.send_message(msg, ephemeral=True)
 
-async def end_giveaway(channel_id: int, message_id: int):
+# FIXED: Added force_end parameter so /gend works instantly
+async def end_giveaway(channel_id: int, message_id: int, force_end: bool = False):
     data = load_giveaways()
     gw = data.get(str(message_id))
     if not gw:
         return
 
-    # Calculate exact time left
-    remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
-    if remaining > 0:
-        await asyncio.sleep(remaining)
+    if not force_end:
+        remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
 
     channel = bot.get_channel(channel_id)
     if not channel:
@@ -123,31 +124,26 @@ async def on_ready():
 
     data = load_giveaways()
     for mid, gw in list(data.items()):
-        channel = bot.get_channel(gw["channel_id"])
+        channel = bot.get_channel(gw.get("channel_id"))
         if not channel:
             data.pop(mid, None)
             continue
-
         try:
             msg = await channel.fetch_message(int(mid))
-            # Re-attach button
             await msg.edit(view=GiveawayView(int(mid)))
 
-            # Re-schedule (or end immediately if expired)
             remaining = gw["end_time"] - datetime.now(timezone.utc).timestamp()
             if remaining > 0:
-                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid)))
+                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid), force_end=False))
             else:
-                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid)))  # ends instantly
-
+                bot.loop.create_task(end_giveaway(gw["channel_id"], int(mid), force_end=True))
         except:
-            data.pop(mid, None)  # clean dead giveaway
+            data.pop(mid, None)
 
     save_giveaways(data)
     await tree.sync()
     print("✅ All slash commands synced & active giveaways restored!")
 
-# ==================== COMMANDS (unchanged except tiny improvements) ====================
 @tree.command(name="gstart", description="Start a new giveaway")
 @app_commands.describe(
     duration="Time (e.g. 1h, 30m, 2d)",
@@ -191,7 +187,7 @@ async def gstart(interaction: discord.Interaction, duration: str, prize: str, wi
     save_giveaways(data)
 
     await msg.edit(view=GiveawayView(msg.id))
-    bot.loop.create_task(end_giveaway(interaction.channel.id, msg.id))
+    bot.loop.create_task(end_giveaway(interaction.channel.id, msg.id, force_end=False))
 
     await interaction.followup.send(f"✅ Giveaway started! Message ID: `{msg.id}`", ephemeral=True)
 
@@ -225,8 +221,8 @@ async def gend(interaction: discord.Interaction, message_id: str):
     if message_id not in data:
         await interaction.followup.send("❌ Giveaway not found.", ephemeral=True)
         return
-    await end_giveaway(interaction.channel.id, int(message_id))
-    await interaction.followup.send("✅ Giveaway ended!", ephemeral=True)
+    await end_giveaway(interaction.channel.id, int(message_id), force_end=True)
+    await interaction.followup.send("✅ Giveaway ended early!", ephemeral=True)
 
 @tree.command(name="greroll", description="Reroll a finished giveaway")
 @app_commands.describe(message_id="Message ID of the ended giveaway")
